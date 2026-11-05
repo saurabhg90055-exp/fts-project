@@ -1,0 +1,22 @@
+{
+  "name": "payguard-switch",
+  "version": "1.0.0",
+  "description": "Autonomous FinTech incident war-room: Switch AI (Cloud Switch) + Discord + Antigravity multi-agent idempotency repair",
+  "main": "payment-service/server.js",
+  "scripts": {
+    "start:api":         "node payment-service/server.js",
+    "start:forensics":   "node agents/sql-forensics.js",
+    "start:gatekeeper":  "node agents/release-gate.js",
+    "test":              "node payment-service/test.js"
+  },
+  "keywords": ["switch-ai", "antigravity", "fintech", "idempotency", "discord", "multi-agent"],
+  "author": "crazysaurabh",
+  "license": "MIT",
+  "dependencies": {
+    "dotenv":      "^16.4.5",
+    "eventsource": "^2.0.2",
+    "express":     "^4.19.2",
+    "node-fetch":  "^3.3.2",
+    "sqlite3":     "^5.1.7"
+  }
+}

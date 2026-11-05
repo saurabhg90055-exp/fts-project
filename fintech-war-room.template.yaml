@@ -1,0 +1,108 @@
+##############################################################################
+# fintech-war-room.template.yaml
+# Switch AI Room Template for PayGuard FinTech Incident Response
+#
+# How to use:
+#   1. Open Switch Console
+#   2. Go to Rooms → New Room → Import Template
+#   3. Upload this file and fill in your agent tokens
+##############################################################################
+
+room:
+  name: "fintech-war-room"
+  description: "Autonomous FinTech incident response room for double-charge detection and hotfix deployment"
+  bridge: "mattermost"           # or "discord" / "slack" — change to match your setup
+  agents: ["sql-forensics", "antigravity-fixer", "release-gatekeeper"]
+  users: ["{$creator}"]
+
+  rules:
+    - id: "rule-pii"
+      label: "Rule 1 (PII Compliance)"
+      description: "Never post unmasked credit card numbers or full PAN in room messages. All agents must mask card data to ****-****-****-LAST4 format."
+
+    - id: "rule-gate"
+      label: "Rule 2 (Production Gate)"
+      description: "No hotfix, schema migration, or database change may be deployed without explicit human approval typed in this room chat."
+
+  kickoff: |
+    🚨 FinTech War Room initialized.
+    @sql-forensics, @antigravity-fixer, and @release-gatekeeper are online and standing by.
+
+    **Active Room Rules:**
+    • Rule 1 — PII: All card numbers will be masked before appearing in chat.
+    • Rule 2 — Gate: No deployment happens without your explicit "Approved" message.
+
+    To start incident triage, type:
+    🚨 Alert: Customer reported double-charge on /api/v1/charge! @sql-forensics investigate.
+
+agents:
+  - name: "sql-forensics"
+    description: "Queries the live SQLite payment database, masks customer PII, and identifies duplicate-charge transactions"
+    addressing: owner-agents
+    provider: "custom-protocol"
+    endpoint: "http://localhost:3001"    # Port your sql-forensics agent listens on (if HTTP mode)
+    protocol: "sse"
+    instructions: |
+      You are a database forensics specialist.
+
+      When tagged with @sql-forensics:
+      1. Connect to the SQLite payments.db at payment-service/payments.db
+      2. Run: SELECT user_email, card_last4, amount, idempotency_key, COUNT(*) as duplicate_count
+              FROM transactions GROUP BY idempotency_key HAVING COUNT(*) > 1
+      3. ALWAYS mask card numbers to ****-****-****-LAST4 (Room Rule #1 — PII compliance)
+      4. Report the JSON findings and estimated overcharge amount in USD
+      5. Identify the root cause in payment-service/server.js
+      6. Tag @antigravity-fixer with the full report and ask for the idempotency patch
+
+  - name: "antigravity-fixer"
+    description: "Reads forensic findings, patches the Node.js/Express server.js for idempotency, and notifies the gatekeeper"
+    addressing: owner-agents
+    provider: "antigravity"
+    instructions: |
+      You are the principal backend engineer in this room.
+
+      When tagged by @sql-forensics:
+      1. Read the SQL forensic report carefully
+      2. Open payment-service/server.js
+      3. Patch the POST /api/v1/charge handler to:
+         a. First run: SELECT id, status FROM transactions WHERE idempotency_key = ?
+         b. If a row exists, return 200 with the existing transaction_id (idempotent response)
+         c. Only INSERT if no existing row is found
+         d. Add a UNIQUE index: CREATE UNIQUE INDEX IF NOT EXISTS idx_idempotency ON transactions(idempotency_key)
+      4. Post the concise git diff in the room chat
+      5. Tag @release-gatekeeper to run the verification test suite
+
+  - name: "release-gatekeeper"
+    description: "Runs the automated idempotency test suite and enforces human approval before any deployment"
+    addressing: anyone
+    provider: "custom-protocol"
+    endpoint: "http://localhost:3002"    # Port your release-gate agent listens on (if HTTP mode)
+    protocol: "sse"
+    instructions: |
+      You are the compliance and deployment gatekeeper.
+
+      When tagged by @antigravity-fixer:
+      1. Run: node payment-service/test.js
+      2. Post the full test output in the room
+      3. If tests pass: invoke Human Permission Gate (Room Rule #2) —
+         message: "⚠️ @Saurabh Reply 'Approved' to deploy hotfix to production."
+      4. Wait for human "Approved" message
+      5. On approval: post deployment confirmation and log to Room Decisions
+
+tasks:
+  auto_create:
+    - trigger: "agent_mention"
+      agent: "sql-forensics"
+      task_title: "Investigate duplicate charges in payments.db"
+      task_assignee: "sql-forensics"
+
+    - trigger: "agent_mention"
+      agent: "antigravity-fixer"
+      task_title: "Patch idempotency bug in payment-service/server.js"
+      task_assignee: "antigravity-fixer"
+
+    - trigger: "agent_mention"
+      agent: "release-gatekeeper"
+      task_title: "Run CI and get human sign-off for hotfix deployment"
+      task_assignee: "release-gatekeeper"
+
