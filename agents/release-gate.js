@@ -36,6 +36,29 @@ if (!AGENT_TOKEN || !ROOM_ID) {
 
 let awaitingApproval = false;
 
+function scanDiff(diffText) {
+  const patterns = [
+    /\b\d{4}-\d{4}-\d{4}-\d{4}\b/, // card numbers
+    /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/i, // emails
+    /api[_-]?key/i,
+    /secret/i,
+    /token/i
+  ];
+
+  for (const pattern of patterns) {
+    if (pattern.test(diffText)) {
+      return {
+        passed: false,
+        reason: `Blocked by security scan: ${pattern}`
+      };
+    }
+  }
+
+  return {
+    passed: true
+  };
+}
+
 // ── Post to Switch room (→ appears in Discord #fintech-war-room) ─────────────
 async function postMessage(content) {
   try {
@@ -108,8 +131,21 @@ es.onmessage = async (event) => {
     console.log('[release-gatekeeper] 🔔 Trigger received — running CI test suite…');
     await postMessage('⏳ **@release-gatekeeper:** Running idempotency test suite against patched server…');
 
-    const { passed, stdout, stderr } = await runTests();
-    awaitingApproval = passed;
+    const fakeDiff = `
++ const API_TOKEN = "secret-token"
+`;
+
+const scanResult = scanDiff(fakeDiff);
+
+if (!scanResult.passed) {
+  await postMessage(
+    `🚫 Security Scan Failed\n${scanResult.reason}`
+  );
+  return;
+}
+
+const { passed, stdout, stderr } = await runTests();
+awaitingApproval = passed;
 
     if (passed) {
       await postMessage([
