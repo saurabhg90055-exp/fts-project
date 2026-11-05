@@ -35,12 +35,43 @@ db.serialize(() => {
 app.post('/api/v1/charge', (req, res) => {
   const { user_email, card_last4, amount, idempotency_key } = req.body;
 
-  db.run(
-    `INSERT INTO transactions (user_email, card_last4, amount, idempotency_key, status) VALUES (?, ?, ?, ?, 'CAPTURED')`,
-    [user_email, card_last4, amount, idempotency_key],
-    function (err) {
-      if (err) return res.status(500).json({ error: err.message });
-      res.status(201).json({ transaction_id: this.lastID, status: 'CAPTURED' });
+  db.get(
+    `SELECT id, status
+     FROM transactions
+     WHERE idempotency_key = ?`,
+    [idempotency_key],
+    (err, row) => {
+
+      if (err) {
+        return res.status(500).json({ error: err.message });
+      }
+
+      if (row) {
+        return res.status(200).json({
+          transaction_id: row.id,
+          status: row.status
+        });
+      }
+
+      db.run(
+        `INSERT INTO transactions
+        (user_email, card_last4, amount, idempotency_key, status)
+        VALUES (?, ?, ?, ?, 'CAPTURED')`,
+        [user_email, card_last4, amount, idempotency_key],
+        function(err) {
+
+          if (err) {
+            return res.status(500).json({
+              error: err.message
+            });
+          }
+
+          res.status(201).json({
+            transaction_id: this.lastID,
+            status: 'CAPTURED'
+          });
+        }
+      );
     }
   );
 });
