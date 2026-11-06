@@ -1,117 +1,238 @@
-# PayGuard Switch 🛡️
+🛡️ PayGuard Switch
+Autonomous FinTech Incident War-Room powered by Switch AI, Antigravity, and custom Node.js agents.
 
-> **Autonomous FinTech Incident War-Room** — Switch AI + Antigravity multi-agent idempotency repair pipeline.
+PayGuard Switch simulates a real-world payment incident where duplicate customer charges occur because of missing idempotency protection. Autonomous agents investigate the issue, generate a fix, validate compliance, require human approval, and record the deployment decision.
 
-```
-[Faulty Node.js + SQLite Payment API]  (Port 4000 - Double-charges customers on retry)
-               │
-               ▼ (Throws 500 / Duplicate Charge Alert)
-┌─────────────────────────────────────────────────────────────────────────┐
-│                    SWITCH AI ROOM: #fintech-war-room                    │
-│  Shared Room Material:                                                  │
-│   • Rules: 1. Mask all card numbers (PII). 2. Require human sign-off.  │
-│   • Tasks: Auto-created & updated by agents during triage               │
-│   • Decisions: Permanent post-mortem audit log                          │
-└──────────┬───────────────────────────┬──────────────────────────┬───────┘
-           │ (SSE / HTTP Protocol)     │ (Native Connector)       │ (SSE / HTTP Protocol)
-           ▼                           ▼                          ▼
-┌─────────────────────┐    ┌──────────────────────┐   ┌────────────────────────┐
-│ @sql-forensics      │    │ @antigravity-fixer   │   │ @release-gatekeeper    │
-│ (Custom Node Agent) │───▶│ (Antigravity Pro)    │──▶│ (Custom Node Agent)    │
-│ Queries live SQLite │    │ Writes idempotency   │   │ Verifies Room Rules,   │
-│ DB, masks PII, finds│    │ code fix & runs      │   │ runs test suite, asks  │
-│ duplicate txns      │    │ unit tests           │   │ @Saurabh for sign-off  │
-└─────────────────────┘    └──────────────────────┘   └────────────────────────┘
-```
+🎯 Problem Statement
+Payment systems often retry requests during network failures.
 
-## 📁 Project Structure
+Without idempotency protection, the same payment request can be processed more than once, resulting in duplicate customer charges.
 
-```
+PayGuard Switch demonstrates how autonomous agents can:
+
+Detect incidents
+Investigate databases
+Enforce security rules
+Validate fixes
+Require human approval
+Record deployment decisions
+✨ Features
+✅ Duplicate payment detection
+
+✅ Automated incident trigger
+
+✅ SQL forensics investigation
+
+✅ PII masking for compliance
+
+✅ Security scanner for secrets and tokens
+
+✅ Idempotency bug repair workflow
+
+✅ Git-based hotfix workflow
+
+✅ Human approval gate
+
+✅ Decision audit logging
+
+✅ Real-time room collaboration
+
+🏗️ Architecture
+                     Customer Alert
+                            |
+                            v
+                 +-------------------+
+                 |  Trigger Script   |
+                 +-------------------+
+                            |
+                            v
+                 +-------------------+
+                 | SQL Forensics     |
+                 | Agent             |
+                 +-------------------+
+                            |
+                            v
+                 +-------------------+
+                 | Switch Tasks      |
+                 +-------------------+
+                            |
+                            v
+                 +-------------------+
+                 | Fix Agent         |
+                 | (Antigravity)     |
+                 +-------------------+
+                            |
+                            v
+                 +-------------------+
+                 | Release Gatekeeper|
+                 +-------------------+
+                            |
+                            v
+                      Human Approval
+                            |
+                            v
+                 +-------------------+
+                 | Deployment        |
+                 +-------------------+
+                            |
+                            v
+                 +-------------------+
+                 | Decisions Log     |
+                 +-------------------+
+📁 Project Structure
 payguard-switch/
-├── payment-service/
-│   ├── server.js          # Buggy FinTech Express API + SQLite DB (Port 4000)
-│   └── test.js            # Automated idempotency verification test suite
+│
 ├── agents/
-│   ├── sql-forensics.js   # Custom Switch Agent #1 — DB Inspector + PII Masker
-│   └── release-gate.js    # Custom Switch Agent #2 — Compliance & Deploy Gate
-├── fintech-war-room.template.yaml  # Switch Room Template (reference)
-├── .env.example           # Environment variable template
+│   ├── sql-forensics.js
+│   └── release-gate.js
+│
+├── payment-service/
+│   ├── server.js
+│   ├── test.js
+│   └── trigger-alert.js
+│
+├── docs/
+│   ├── architecture.md
+│   └── demo-script.md
+│
+├── fintech-war-room.template.yaml
+├── .env.example
 ├── package.json
-└── README.md
-```
-
-## 🚀 3-Step Quick Start
-
-### Step 1 — Install dependencies
-```bash
+├── README.md
+└── PRD.md
+🚀 Quick Start
+Install Dependencies
 npm install
-```
-
-### Step 2 — Configure environment
-```bash
-copy .env.example .env
-# No changes needed — default tokens work out of the box
-```
-
-### Step 3 — Start all services (4 terminals)
-```bash
-# Terminal 1 — Local Switch server (war-room UI + SSE hub)
-npm run start:switch
-
-# Terminal 2 — Buggy payment API
+Start Payment API
 npm run start:api
-
-# Terminal 3 — SQL forensics agent
+Start SQL Forensics Agent
 npm run start:forensics
-
-# Terminal 4 — Release gatekeeper agent
+Start Release Gatekeeper
 npm run start:gatekeeper
-```
-
-Open the war-room UI at **http://localhost:8080/ui** and paste:
-```
-🚨 Alert: Customer reported double-charge on /api/v1/charge! @sql-forensics investigate.
-```
-
-## 🧪 Running Tests
-```bash
-# Make sure the payment API is running first (npm run start:api)
+Trigger an Incident
+npm run trigger
+🧪 Running Tests
 npm test
-```
+Expected:
 
-## 🏗️ How It Works
+Results: 7 passed, 0 failed
+🔥 Incident Workflow
+Step 1
+Trigger script sends duplicate payment requests.
 
-| Step | Agent | Action |
-|------|-------|--------|
-| 1 | `@sql-forensics` | Queries `payments.db`, masks PII, finds duplicate `idempotency_key` |
-| 2 | `@antigravity-fixer` | Reads report, patches `server.js` to check key before inserting |
-| 3 | `@release-gatekeeper` | Runs test suite, enforces human approval (Room Rule #2) |
-| 4 | Human (`@Saurabh`) | Types `Approved` → hotfix deployed, decision logged |
+npm run trigger
+Step 2
+SQL Forensics agent:
 
-## 🔑 Key Bug & Fix
+Queries payments.db
+Detects duplicate transactions
+Masks customer card information
+Generates incident report
+Step 3
+Fix agent investigates the issue and patches:
 
-**Bug:** `POST /api/v1/charge` inserts a new row for every request — even retries with the same `idempotency_key`.
+payment-service/server.js
+Step 4
+Release Gatekeeper:
 
-**Fix:** Check for existing `idempotency_key` before inserting:
-```js
-// PATCHED handler (applied by @antigravity-fixer)
-db.get(`SELECT id, status FROM transactions WHERE idempotency_key = ?`, [idempotency_key], (err, row) => {
-  if (row) return res.status(200).json({ transaction_id: row.id, status: row.status });
-  // proceed with INSERT only if no existing row
-});
-```
+Runs security scan
+Checks for secrets/tokens
+Runs CI tests
+Step 5
+Human approves deployment:
 
-## 🌐 Environment Variables
+Approved
+Step 6
+Decision is permanently recorded.
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `SWITCH_URL` | Local Switch server URL | `http://localhost:8080` |
-| `SWITCH_ROOM_ID` | Room identifier (any string) | `war-room-001` |
-| `SQL_AGENT_TOKEN` | Token for `@sql-forensics` | `token-sql-forensics-dev` |
-| `GATE_AGENT_TOKEN` | Token for `@release-gatekeeper` | `token-release-gatekeeper-dev` |
+🔑 Root Cause & Fix
+Root Cause
+The payment API inserted a new transaction for every request without checking whether the same:
 
-> **No Docker or Switch Console required.** `switch-local.js` is a self-contained SSE hub + war-room UI that runs entirely in Node.js.
+idempotency_key
+already existed.
 
-## 📜 License
-MIT
+This caused duplicate charges when requests were retried.
 
+Fix
+Before inserting:
+
+SELECT id, status
+FROM transactions
+WHERE idempotency_key = ?
+If a matching transaction already exists:
+
+return existing transaction
+Otherwise:
+
+INSERT new transaction
+Result:
+
+✅ No duplicate charges
+
+✅ Consistent responses
+
+✅ All tests passing
+
+🛡️ Security Features
+PII Protection
+Customer card numbers are masked before being posted to the room.
+
+Example:
+
+****-****-****-3344
+Security Scanner
+The Release Gatekeeper scans patches for:
+
+Card numbers
+Email addresses
+Tokens
+API keys
+Secrets
+Unsafe patches are rejected before tests run.
+
+✅ Current Results
+Idempotency Verification
+Results: 7 passed, 0 failed
+Trigger Automation
+✅ Duplicate prevented
+Security Scanner
+✅ Email Detection
+✅ Card Number Detection
+✅ Secret Detection
+✅ Token Detection
+🎬 Demo Workflow
+Run:
+npm run trigger
+Duplicate payment incident detected
+
+SQL Forensics report generated
+
+Task created
+
+Fix patch reviewed
+
+Security scan executed
+
+CI tests executed
+
+Human types:
+
+Approved
+Deployment confirmed
+
+Decision recorded
+
+🌐 Environment Variables
+Variable	Description
+SWITCH_URL	Switch Server URL
+SWITCH_ROOM_ID	Room Identifier
+SQL_AGENT_TOKEN	SQL Forensics Agent Token
+GATE_AGENT_TOKEN	Release Gatekeeper Token
+👥 Contributors
+Anikha Padala
+Team Members
+Built for the Flip the Switch Hackathon 2026 🚀
+
+📜 License
+MIT License
