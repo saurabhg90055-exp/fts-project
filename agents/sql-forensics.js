@@ -1,21 +1,16 @@
 /**
- * agents/sql-forensics.js
- * Custom Switch Agent #1 — @sql-forensics
+ * agents/sql-forensics.js — @sql-forensics
  *
- * Protocol (Switch v0.40.1 agent protocol):
- *   • Registers once with POST /agents using the registration key
- *   • Subscribes to room events via SSE: GET /agents/{agent_id}/events
- *   • Sends heartbeat every 2s: POST /agents/{agent_id}/connection/beat
- *   • When tagged @sql-forensics in Discord, queries payments.db
- *   • Masks PII per Room Rule #1 before posting
- *   • Hands root cause + fix request to @antigravity-fixer
+ * Switch v0.40.1 SSE agent. Queries payments.db on @sql-forensics mention.
+ * Masks PII per Room Rule #1. Reports root cause to @antigravity-fixer.
  *
- * Spam-prevention guards:
- *   1. Dedup by SSE cursor + content prefix (unique per event)
- *   2. Self-ignore by agent ID and agent name
- *   3. Content-based echo filter (skip our own outgoing message text)
- *   4. isBusy lock — only one forensics run at a time
- *   5. 60-second cooldown between runs
+ * Anti-spam: dedup set, self-ignore (name + content echo), busy lock, 30s cooldown.
+ * SSE reconnect: exponential backoff (2s → 60s max), stops on fatal errors.
+ *
+ * Event format (from Switch docs):
+ *   { event: "message",
+ *     data: { type: "message", room_id, payload: { addressed, sender, sender_name, body, ... } },
+ *     id: <sequence> }
  */
 
 require('dotenv').config();
@@ -31,20 +26,15 @@ const REG_KEY       = process.env.SQL_AGENT_TOKEN;
 let   AGENT_ID      = process.env.SQL_AGENT_ID;
 let   AGENT_API_KEY = process.env.SQL_AGENT_API_KEY;
 
-if (!ROOM_ID) {
-  console.error('❌ Missing required env var: SWITCH_ROOM_ID');
-  process.exit(1);
-}
+if (!ROOM_ID) { console.error('❌ Missing SWITCH_ROOM_ID'); process.exit(1); }
 if (!AGENT_ID || !AGENT_API_KEY) {
-  if (!REG_KEY) {
-    console.error('❌ Missing env vars: either set SQL_AGENT_ID + SQL_AGENT_API_KEY, or SQL_AGENT_TOKEN');
-    process.exit(1);
-  }
+  if (!REG_KEY) { console.error('❌ Missing SQL_AGENT_ID + SQL_AGENT_API_KEY, or SQL_AGENT_TOKEN'); process.exit(1); }
 }
 
-// ── SQLite ───────────────────────────────────────────────────────────────────
+// ── SQLite (read-only) ────────────────────────────────────────────────────────
+const DB_PATH = path.join(__dirname, '../payment-service/payments.db');
 const db = new sqlite3.Database(
-  path.join(__dirname, '../payment-service/payments.db'),
+  DB_PATH,
   sqlite3.OPEN_READONLY,
   (err) => {
     if (err) {
@@ -56,315 +46,297 @@ const db = new sqlite3.Database(
   }
 );
 
-// ── PII Masking — Room Rule #1 ───────────────────────────────────────────────
 function maskCard(card) {
   if (!card) return '****-****-****-????';
   return card.replace(/\d{4}-\d{4}-\d{4}-(\d{4})/, '****-****-****-$1');
 }
 
-// ── Forensics Query ──────────────────────────────────────────────────────────
-function runForensics(callback) {
-  const query = `
-    SELECT user_email, card_last4, amount, idempotency_key, COUNT(*) as duplicate_count
-    FROM transactions
-    GROUP BY idempotency_key
-    HAVING COUNT(*) > 1
-    ORDER BY duplicate_count DESC
-  `;
-  db.all(query, [], (err, rows) => {
-    if (err) return callback(`SQL Error: ${err.message}`);
-    const sanitized = rows.map(r => ({
-      user_email:                 r.user_email,
-      card_last4:                 maskCard(r.card_last4),
-      amount_cents:               r.amount,
-      idempotency_key:            r.idempotency_key,
-      duplicate_count:            r.duplicate_count,
-      estimated_overcharge_cents: r.amount * (r.duplicate_count - 1),
-    }));
-    callback(null, sanitized);
+function runForensics() {
+  return new Promise((resolve, reject) => {
+    db.all(`
+      SELECT user_email, card_last4, amount, idempotency_key, COUNT(*) as duplicate_count
+      FROM transactions GROUP BY idempotency_key
+      HAVING COUNT(*) > 1 ORDER BY duplicate_count DESC
+    `, [], (err, rows) => {
+      if (err) return reject(err);
+      resolve(rows.map(r => ({
+        user_email:                 r.user_email,
+        card_last4:                 maskCard(r.card_last4),
+        amount_cents:               r.amount,
+        idempotency_key:            r.idempotency_key,
+        duplicate_count:            r.duplicate_count,
+        estimated_overcharge_cents: r.amount * (r.duplicate_count - 1),
+      })));
+    });
   });
 }
 
-// ── Post message ─────────────────────────────────────────────────────────────
+// ── Post message ──────────────────────────────────────────────────────────────
+const CONNECTION_ID = randomUUID();
+
 async function postMessage(content, roomId) {
   const targetRoom = roomId || ROOM_ID;
 
+  // Primary: ops/post_message (connection-aware)
   try {
     const res = await fetch(`${SWITCH_SERVER}/agents/${AGENT_ID}/ops/post_message`, {
       method: 'POST',
       headers: {
-        'Content-Type':           'application/json',
-        'Authorization':          `Bearer ${AGENT_API_KEY}`,
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${AGENT_API_KEY}`,
         'X-Switch-Connection-Id': CONNECTION_ID,
       },
       body: JSON.stringify({ room_id: targetRoom, content }),
     });
-    if (res.ok) {
-      console.log('[sql-forensics] ✉️  Message posted via ops.');
-      return;
-    }
-    console.warn(`[sql-forensics] ⚠️ ops/post_message failed (${res.status}), trying /message fallback...`);
+    if (res.ok) { console.log('[sql-forensics] ✉️  Message posted via ops.'); return; }
+    console.warn(`[sql-forensics] ⚠️ ops/post_message ${res.status}, trying fallback...`);
   } catch (err) {
-    console.warn('[sql-forensics] ⚠️ ops/post_message error:', err.message);
+    console.warn('[sql-forensics] ⚠️ ops error:', err.message);
   }
 
+  // Fallback: /message (no connection required)
   try {
     const res = await fetch(`${SWITCH_SERVER}/agents/${AGENT_ID}/message`, {
       method: 'POST',
-      headers: {
-        'Content-Type':  'application/json',
-        'Authorization': `Bearer ${AGENT_API_KEY}`,
-      },
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${AGENT_API_KEY}` },
       body: JSON.stringify({ room_id: targetRoom, content }),
     });
-    if (!res.ok) {
-      const txt = await res.text().catch(() => '');
-      throw new Error(`HTTP ${res.status} — ${txt}`);
-    }
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
     console.log('[sql-forensics] ✉️  Message posted to room.');
   } catch (err) {
     console.error('[sql-forensics] ❌ postMessage failed:', err.message);
   }
 }
 
-// ── Register agent once ───────────────────────────────────────────────────────
+// ── Register ──────────────────────────────────────────────────────────────────
 async function registerAgent() {
   console.log('[sql-forensics] 🔧 Registering agent with Switch...');
   const body = {
-    name:              'sql-forensics',
-    description:       'Queries SQLite payment DB, masks PII, finds duplicate charges',
-    connector_type:    'custom',
-    integration_profile: {
-      connection_model:          'always_on',
-      message_exchange:          true,
-      pre_invocation_mediation:  [],
-      post_invocation_mediation: [],
-      event_reporting:           [],
-    },
+    name: 'sql-forensics',
+    description: 'Queries SQLite payment DB, masks PII, finds duplicate charges',
+    connector_type: 'custom',
+    integration_profile: { connection_model: 'always_on', message_exchange: true,
+      pre_invocation_mediation: [], post_invocation_mediation: [], event_reporting: [] },
   };
-
   let res = await fetch(`${SWITCH_SERVER}/agents`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${REG_KEY}` },
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${REG_KEY}` },
     body: JSON.stringify(body),
   });
-
   if (res.status === 409) {
-    console.log('[sql-forensics] ⚠️  Name exists (409) — re-registering with overwrite:true...');
     res = await fetch(`${SWITCH_SERVER}/agents`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${REG_KEY}` },
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${REG_KEY}` },
       body: JSON.stringify({ ...body, overwrite: true }),
     });
   }
-
-  if (!res.ok) {
-    const txt = await res.text().catch(() => '');
-    throw new Error(`Registration failed: HTTP ${res.status} — ${txt}`);
-  }
-
+  if (!res.ok) throw new Error(`Registration failed: HTTP ${res.status}`);
   const data = await res.json();
-  console.log('\n[sql-forensics] ✅ Registered! Patching .env...\n');
-
   const envPath = path.join(__dirname, '../.env');
   if (fs.existsSync(envPath)) {
     let env = fs.readFileSync(envPath, 'utf8');
-    env = env.replace(/^SQL_AGENT_ID=.*$/m,      `SQL_AGENT_ID=${data.id}`)
-             .replace(/^SQL_AGENT_API_KEY=.*$/m,  `SQL_AGENT_API_KEY=${data.api_key}`);
+    env = env.replace(/^SQL_AGENT_ID=.*$/m, `SQL_AGENT_ID=${data.id}`)
+             .replace(/^SQL_AGENT_API_KEY=.*$/m, `SQL_AGENT_API_KEY=${data.api_key}`);
     if (!env.includes('SQL_AGENT_ID='))     env += `\nSQL_AGENT_ID=${data.id}`;
     if (!env.includes('SQL_AGENT_API_KEY=')) env += `\nSQL_AGENT_API_KEY=${data.api_key}`;
     fs.writeFileSync(envPath, env);
-    console.log('[sql-forensics] ✅ .env updated — restart the agent now.\n');
-  } else {
-    console.log(`  SQL_AGENT_ID=${data.id}`);
-    console.log(`  SQL_AGENT_API_KEY=${data.api_key}`);
-    console.log('\n  Add these to your .env, then restart.\n');
+    console.log('[sql-forensics] ✅ Registered + .env updated. Restart the agent.\n');
   }
-
   process.exit(0);
 }
 
-// ── SSE connection ────────────────────────────────────────────────────────────
-const CONNECTION_ID = randomUUID();
+// ── Anti-spam state ───────────────────────────────────────────────────────────
 
-// Strings that ONLY appear in our own outgoing messages — used for echo filtering
-const OWN_MESSAGE_SIGNATURES = [
+// Strings only OUR outgoing messages contain — used for echo filtering
+const OWN_SIGNATURES = [
   'SQL Forensics Report',
   'No duplicate transactions found',
-  'SQL Forensics** error',
-  'SQL Forensics: error',
+  'SQL Forensics encountered an error',
+  'SQL Forensics:',
 ];
 
-// Global state
-let isBusy       = false;
-let lastRunAt     = 0;
-const RUN_COOLDOWN_MS = 60000; // 60-second minimum between runs
+let isBusy    = false;
+let lastRunAt = 0;
+const COOLDOWN_MS  = 30_000;
+const MAX_SEEN     = 500;
+let reconnectDelay = 2000; // exponential backoff: 2s → 4s → 8s → ... → 60s max
 
+// ── SSE connection ────────────────────────────────────────────────────────────
 function connectSSE() {
-  const sseUrl = `${SWITCH_SERVER}/agents/${AGENT_ID}/events?connection_id=${CONNECTION_ID}&scope=all&filter=all&start_from=head`;
-  console.log(`[sql-forensics] 🔌 Connecting to SSE: ${sseUrl}`);
+  const sseUrl = `${SWITCH_SERVER}/agents/${AGENT_ID}/events`
+    + `?connection_id=${CONNECTION_ID}`
+    + `&scope=all&filter=all&start_from=head`;
+  console.log(`[sql-forensics] 🔌 Connecting to SSE...`);
 
   const es = new EventSource(sseUrl, {
     headers: { Authorization: `Bearer ${AGENT_API_KEY}` },
   });
 
   let cursor = 0;
-  const processedKeys = new Set();
+  let heartbeatTimer = null;
+  const processed = new Set();
 
-  es.onopen = async () => {
-    console.log('[sql-forensics] ✅ Connected to Switch Room SSE stream.');
+  function cleanup() {
+    if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }
+    try { es.close(); } catch {}
+  }
 
-    // List agent rooms on startup
-    setTimeout(async () => {
+  function scheduleReconnect(reason) {
+    cleanup();
+    console.log(`[sql-forensics] 🔄 Reconnecting in ${reconnectDelay / 1000}s... (${reason})`);
+    setTimeout(connectSSE, reconnectDelay);
+    reconnectDelay = Math.min(reconnectDelay * 2, 60_000);
+  }
+
+  let isInitialConnect = true;
+
+  es.onopen = () => {
+    if (isInitialConnect) {
+      console.log('[sql-forensics] ✅ Connected to Switch Room SSE stream.');
+      console.log('[sql-forensics] 🚀 Waiting for @sql-forensics mention in #fintech-war-room …');
+      isInitialConnect = false;
+    }
+    reconnectDelay = 2000; // reset backoff on success
+
+    // Ensure previous heartbeat timer is cleared before starting a new one
+    if (heartbeatTimer) clearInterval(heartbeatTimer);
+
+    // Heartbeat every 2s (per Switch docs: TTL = 6s)
+    heartbeatTimer = setInterval(async () => {
       try {
-        const res = await fetch(`${SWITCH_SERVER}/agents/${AGENT_ID}/ops/list_rooms`, {
+        const r = await fetch(`${SWITCH_SERVER}/agents/${AGENT_ID}/connection/beat`, {
           method: 'POST',
-          headers: {
-            'Content-Type':           'application/json',
-            'Authorization':          `Bearer ${AGENT_API_KEY}`,
-            'X-Switch-Connection-Id': CONNECTION_ID,
-          },
-          body: JSON.stringify({}),
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${AGENT_API_KEY}` },
+          body: JSON.stringify({ connection_id: CONNECTION_ID, cursor }),
         });
-        if (res.ok) {
-          const data = await res.json();
-          const rooms = data.result?.rooms || data.rooms || [];
-          console.log('[sql-forensics] 📋 Agent room memberships:');
-          if (rooms.length === 0) {
-            console.log('   ⚠️  NONE — go to Switch Console → fintech-war-room → Participants → add sql-forensics');
-          }
-          rooms.forEach(r => console.log(`   ✅ ${r.id}  "${r.name || r.title || '(unnamed)'}"`));
+        if (r.status === 404) {
+          // Connection unknown or dead — reopen
+          scheduleReconnect('heartbeat 404');
+        } else if (r.status === 409) {
+          // Check if taken_over — don't reconnect
+          try {
+            const body = await r.json();
+            if (body.code === 'taken_over') {
+              console.error('[sql-forensics] ❌ Connection taken over. Stopping.');
+              cleanup();
+              return;
+            }
+          } catch {}
+          scheduleReconnect('heartbeat 409');
         }
-      } catch (e) { /* ignore */ }
-    }, 500);
-
-    console.log('[sql-forensics] 🚀 Waiting for @sql-forensics mention in #fintech-war-room …');
+      } catch { /* network hiccup, heartbeat will retry */ }
+    }, 2000);
   };
-
-  // Heartbeat every 2 seconds
-  const heartbeat = setInterval(async () => {
-    try {
-      const r = await fetch(`${SWITCH_SERVER}/agents/${AGENT_ID}/connection/beat`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${AGENT_API_KEY}` },
-        body: JSON.stringify({ connection_id: CONNECTION_ID, cursor }),
-      });
-      if (r.status === 404) {
-        clearInterval(heartbeat);
-        es.close();
-        console.log('[sql-forensics] 🔄 Connection lost — reconnecting...');
-        setTimeout(connectSSE, 2000);
-      }
-    } catch { /* network hiccup */ }
-  }, 2000);
 
   es.addEventListener('message', async (event) => {
     let frame;
     try { frame = JSON.parse(event.data); } catch { return; }
 
-    if (frame.id) cursor = frame.id;
+    // Update cursor from the sequence number (frame.id)
+    if (typeof frame.id === 'number') cursor = frame.id;
 
-    const payload = frame.data?.payload || frame.payload;
+    // Extract message payload per Switch docs:
+    // frame.data.payload = { addressed, sender, sender_name, body, ... }
+    const data    = frame.data || {};
+    const payload = data.payload || frame.payload;
     if (!payload) return;
 
+    // The message body is in payload.body (per docs), fallback to payload.content
     const content = payload.body || payload.content || '';
     if (!content) return;
 
-    // ── Guard 1: Deduplicate by cursor + content prefix ───────────────────────
+    // ── Guard 1: Dedup by sequence + content prefix ──
     const dedupKey = `${frame.id}:${content.slice(0, 100)}`;
-    if (processedKeys.has(dedupKey)) return;
-    processedKeys.add(dedupKey);
-    if (processedKeys.size > 500) processedKeys.delete(processedKeys.values().next().value);
+    if (processed.has(dedupKey)) return;
+    processed.add(dedupKey);
+    if (processed.size > MAX_SEEN) {
+      // Evict oldest entry
+      const first = processed.values().next().value;
+      processed.delete(first);
+    }
 
-    // ── Guard 2: Ignore messages from ourselves (by ID) ───────────────────────
-    const senderId = payload.sender_id || frame.data?.sender_id || '';
-    if (senderId === AGENT_ID) return;
-
-    // ── Guard 3: Ignore messages from ourselves (by name, catches Discord echo) ─
-    const senderName = (payload.sender_name || frame.data?.sender_name || '').toLowerCase();
+    // ── Guard 2: Self-ignore by sender_name ──
+    const senderName = (payload.sender_name || data.sender_name || '').toLowerCase();
     if (senderName === 'sql-forensics') return;
 
-    // ── Guard 4: Content echo filter — skip our own outgoing message text ─────
-    if (OWN_MESSAGE_SIGNATURES.some(sig => content.includes(sig))) return;
+    // ── Guard 3: Content echo filter — skip messages containing our own output ──
+    if (OWN_SIGNATURES.some(sig => content.includes(sig))) return;
 
-    const eventRoomId = frame.data?.room_id || ROOM_ID;
-
-    // ── Guard 5: Only fire on @sql-forensics mention ──────────────────────────
+    // ── Guard 4: Only trigger on @sql-forensics mention ──
     if (!content.toLowerCase().includes('@sql-forensics')) return;
 
-    // ── Guard 6: isBusy lock ──────────────────────────────────────────────────
+    // ── Guard 5: Busy lock ──
     if (isBusy) {
-      console.log('[sql-forensics] ⏳ Already processing — skipping duplicate trigger.');
+      console.log('[sql-forensics] ⏳ Already running — skipping duplicate trigger.');
       return;
     }
 
-    // ── Guard 7: 60-second cooldown ───────────────────────────────────────────
+    // ── Guard 6: Cooldown ──
     const now = Date.now();
-    if ((now - lastRunAt) < RUN_COOLDOWN_MS) {
-      console.log(`[sql-forensics] ⏳ Cooldown active (${Math.round((RUN_COOLDOWN_MS - (now - lastRunAt)) / 1000)}s left) — skipping.`);
+    if ((now - lastRunAt) < COOLDOWN_MS) {
+      console.log('[sql-forensics] ⏳ Cooldown active — skipping.');
       return;
     }
 
-    isBusy   = true;
+    isBusy = true;
     lastRunAt = now;
+    const eventRoomId = data.room_id || ROOM_ID;
     console.log('[sql-forensics] 🔔 Mention detected — running DB forensics…');
-    console.log(`[sql-forensics] 📍 Replying to room: ${eventRoomId}`);
 
-    runForensics(async (err, duplicates) => {
-      try {
-        if (err) {
-          // NOTE: NO "@sql-forensics" in error text to prevent echo re-trigger
-          await postMessage(`⚠️ **SQL Forensics** encountered an error: \`${err}\``, eventRoomId);
-          return;
-        }
+    try {
+      const duplicates = await runForensics();
 
-        if (duplicates.length === 0) {
-          // NOTE: NO "@sql-forensics" mention in this text
-          await postMessage('✅ **SQL Forensics:** No duplicate transactions found in `payments.db`. Database looks clean.', eventRoomId);
-          return;
-        }
-
-        const totalOvercharge = duplicates.reduce((s, r) => s + r.estimated_overcharge_cents, 0);
-
-        const report = [
-          `🔍 **SQL Forensics Report** _(PII masked — Room Rule #1 compliant)_`,
-          ``,
-          `Found **${duplicates.length}** duplicate transaction group(s) in \`payments.db\`:`,
-          `\`\`\`json`,
-          JSON.stringify(duplicates, null, 2),
-          `\`\`\``,
-          `💸 **Estimated overcharge:** \`$${(totalOvercharge / 100).toFixed(2)} USD\``,
-          ``,
-          `**Root cause:** \`POST /api/v1/charge\` in \`payment-service/server.js\` inserts a new`,
-          `row on every request without checking if the \`idempotency_key\` already exists.`,
-          ``,
-          // NOTE: "Tag @release-gatekeeper" is removed — antigravity-fixer will do that manually
-          `**Next step for @antigravity-fixer:** Patch \`payment-service/server.js\` to enforce`,
-          `idempotency (SELECT existing row before INSERT) and add a UNIQUE index on \`idempotency_key\`.`,
-          `Once patched, tag the release-gatekeeper agent to run CI verification.`,
-        ].join('\n');
-
-        await postMessage(report, eventRoomId);
-      } finally {
-        isBusy = false; // always release lock
+      if (duplicates.length === 0) {
+        await postMessage(
+          '✅ **SQL Forensics:** No duplicate transactions found in `payments.db`. Database looks clean.',
+          eventRoomId
+        );
+        return;
       }
-    });
+
+      const totalOvercharge = duplicates.reduce((s, r) => s + r.estimated_overcharge_cents, 0);
+      const report = [
+        `🔍 **SQL Forensics Report** _(PII masked — Room Rule #1 compliant)_`,
+        ``,
+        `Found **${duplicates.length}** duplicate transaction group(s) in \`payments.db\`:`,
+        `\`\`\`json`,
+        JSON.stringify(duplicates, null, 2),
+        `\`\`\``,
+        `💸 **Estimated overcharge:** \`$${(totalOvercharge / 100).toFixed(2)} USD\``,
+        ``,
+        `**Root cause:** \`POST /api/v1/charge\` in \`payment-service/server.js\` inserts a new`,
+        `row on every request without checking if the \`idempotency_key\` already exists.`,
+        ``,
+        `**Next step for antigravity-fixer:** Patch \`payment-service/server.js\` to enforce`,
+        `idempotency (SELECT existing row before INSERT) and add a UNIQUE index on \`idempotency_key\`.`,
+        `Once patched, tag the release gatekeeper to run CI verification.`,
+      ].join('\n');
+      await postMessage(report, eventRoomId);
+    } catch (err) {
+      await postMessage(
+        `⚠️ **SQL Forensics** encountered an error: \`${err.message}\``,
+        eventRoomId
+      );
+    } finally {
+      isBusy = false;
+    }
   });
 
   es.onerror = (err) => {
-    console.error('[sql-forensics] ⚡ SSE error:', err.message || JSON.stringify(err));
+    const status = err.status;
+
+    // Only log and stop on fatal authentication/authorization errors
+    if (typeof status === 'number' && [400, 401, 403].includes(status)) {
+      console.error(`[sql-forensics] ❌ Fatal SSE error (${status}). Check SWITCH_URL and agent credentials.`);
+      cleanup();
+      return;
+    }
+
+    // Normal transient socket resets/keepalives are auto-reconnected by EventSource silently
   };
 }
 
-// ── Main ─────────────────────────────────────────────────────────────────────
+// ── Main ──────────────────────────────────────────────────────────────────────
 async function main() {
-  if (!AGENT_ID || !AGENT_API_KEY) {
-    await registerAgent();
-  }
+  if (!AGENT_ID || !AGENT_API_KEY) await registerAgent();
   connectSSE();
 }
-
-main().catch(err => {
-  console.error('[sql-forensics] Fatal:', err.message);
-  process.exit(1);
-});
+main().catch(err => { console.error('[sql-forensics] Fatal:', err.message); process.exit(1); });

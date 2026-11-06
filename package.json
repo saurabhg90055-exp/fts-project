@@ -6,7 +6,6 @@
   "scripts": {
     "reset":             "node payment-service/reset-db.js",
     "start:api":         "node payment-service/server.js",
-    "start:buggy":       "node payment-service/server.buggy.js",
     "start:forensics":   "node agents/sql-forensics.js",
     "start:gatekeeper":  "node agents/release-gate.js",
     "test":              "node payment-service/test.js",

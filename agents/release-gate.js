@@ -1,20 +1,16 @@
 /**
- * agents/release-gate.js
- * Custom Switch Agent #2 — @release-gatekeeper
+ * agents/release-gate.js — @release-gatekeeper
  *
- * Protocol (Switch v0.40.1 agent protocol):
- *   • Registers once with POST /agents using the registration key
- *   • Subscribes to room events via SSE: GET /agents/{agent_id}/events
- *   • Sends heartbeat every 2s: POST /agents/{agent_id}/connection/beat
- *   • When tagged @release-gatekeeper: runs automated test suite
- *   • Enforces Room Rule #2: waits for human "Approved" before deploying
+ * Switch v0.40.1 SSE agent. Runs CI test suite on @release-gatekeeper mention.
+ * Enforces Room Rule #2: waits for human "Approved" before deploying.
  *
- * Spam-prevention guards:
- *   1. Dedup by SSE cursor + content prefix (unique per event)
- *   2. Self-ignore by agent ID and agent name
- *   3. Content-based echo filter (skip our own outgoing message text)
- *   4. ciRunning lock — only one CI run at a time, released AFTER all posts
- *   5. 60-second cooldown between CI runs
+ * Anti-spam: dedup set, self-ignore (name + content echo), ciRunning lock, 30s cooldown.
+ * SSE reconnect: exponential backoff (2s → 60s max), stops on fatal errors.
+ *
+ * Event format (from Switch docs):
+ *   { event: "message",
+ *     data: { type: "message", room_id, payload: { addressed, sender, sender_name, body, ... } },
+ *     id: <sequence> }
  */
 
 require('dotenv').config();
@@ -30,84 +26,57 @@ const REG_KEY       = process.env.GATE_AGENT_TOKEN;
 let   AGENT_ID      = process.env.GATE_AGENT_ID;
 let   AGENT_API_KEY = process.env.GATE_AGENT_API_KEY;
 
-if (!ROOM_ID) {
-  console.error('❌ Missing required env var: SWITCH_ROOM_ID');
-  process.exit(1);
-}
+if (!ROOM_ID) { console.error('❌ Missing SWITCH_ROOM_ID'); process.exit(1); }
 if (!AGENT_ID || !AGENT_API_KEY) {
-  if (!REG_KEY) {
-    console.error('❌ Missing env vars: either set GATE_AGENT_ID + GATE_AGENT_API_KEY, or GATE_AGENT_TOKEN');
-    process.exit(1);
-  }
+  if (!REG_KEY) { console.error('❌ Missing GATE_AGENT_ID + GATE_AGENT_API_KEY, or GATE_AGENT_TOKEN'); process.exit(1); }
 }
 
-// Global state
+// ── Global state ──────────────────────────────────────────────────────────────
 let awaitingApproval = false;
 let ciRunning        = false;
 let lastCiRunAt      = 0;
-const CI_COOLDOWN_MS  = 60000; // 60-second minimum between CI runs
+const CI_COOLDOWN_MS = 30_000;
 
-// Strings that ONLY appear in our own outgoing messages — used for echo filtering
-const OWN_MESSAGE_SIGNATURES = [
-  'Release Gatekeeper:',       // "⏳ **Release Gatekeeper:** Running..."
+// Strings only OUR outgoing messages contain — used for echo filtering
+const OWN_SIGNATURES = [
+  'Release Gatekeeper:',
   'CI Verification Passed',
   'CI Verification Failed',
   'Hotfix Deployed to Production',
   'Human Permission Gate',
 ];
 
-// ── Security scan ─────────────────────────────────────────────────────────────
-function scanDiff(diffText) {
-  const patterns = [
-    /\b\d{4}-\d{4}-\d{4}-\d{4}\b/,
-    /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/i,
-    /api[_-]?key/i,
-    /secret/i,
-  ];
-  for (const pattern of patterns) {
-    if (pattern.test(diffText)) {
-      return { passed: false, reason: `Blocked by security scan: ${pattern}` };
-    }
-  }
-  return { passed: true };
-}
-
 // ── Post message ──────────────────────────────────────────────────────────────
+const CONNECTION_ID = randomUUID();
+
 async function postMessage(content, roomId) {
   const targetRoom = roomId || ROOM_ID;
 
+  // Primary: ops/post_message (connection-aware)
   try {
     const res = await fetch(`${SWITCH_SERVER}/agents/${AGENT_ID}/ops/post_message`, {
       method: 'POST',
       headers: {
-        'Content-Type':           'application/json',
-        'Authorization':          `Bearer ${AGENT_API_KEY}`,
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${AGENT_API_KEY}`,
         'X-Switch-Connection-Id': CONNECTION_ID,
       },
       body: JSON.stringify({ room_id: targetRoom, content }),
     });
-    if (res.ok) {
-      console.log('[release-gatekeeper] ✉️  Message posted via ops.');
-      return;
-    }
-    console.warn(`[release-gatekeeper] ⚠️ ops/post_message failed (${res.status}), trying /message fallback...`);
+    if (res.ok) { console.log('[release-gatekeeper] ✉️  Message posted via ops.'); return; }
+    console.warn(`[release-gatekeeper] ⚠️ ops/post_message ${res.status}, trying fallback...`);
   } catch (err) {
-    console.warn('[release-gatekeeper] ⚠️ ops/post_message error:', err.message);
+    console.warn('[release-gatekeeper] ⚠️ ops error:', err.message);
   }
 
+  // Fallback: /message (no connection required)
   try {
     const res = await fetch(`${SWITCH_SERVER}/agents/${AGENT_ID}/message`, {
       method: 'POST',
-      headers: {
-        'Content-Type':  'application/json',
-        'Authorization': `Bearer ${AGENT_API_KEY}`,
-      },
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${AGENT_API_KEY}` },
       body: JSON.stringify({ room_id: targetRoom, content }),
     });
-    if (!res.ok) {
-      const txt = await res.text().catch(() => '');
-      throw new Error(`HTTP ${res.status} — ${txt}`);
-    }
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
     console.log('[release-gatekeeper] ✉️  Message posted to room.');
   } catch (err) {
     console.error('[release-gatekeeper] ❌ postMessage failed:', err.message);
@@ -124,155 +93,173 @@ function runTests() {
   });
 }
 
-// ── Register agent once ───────────────────────────────────────────────────────
+// ── Register ──────────────────────────────────────────────────────────────────
 async function registerAgent() {
   console.log('[release-gatekeeper] 🔧 Registering agent with Switch...');
   const body = {
-    name:              'release-gatekeeper',
-    description:       'Runs CI test suite, enforces human approval before deployment',
-    connector_type:    'custom',
-    integration_profile: {
-      connection_model:          'always_on',
-      message_exchange:          true,
-      pre_invocation_mediation:  [],
-      post_invocation_mediation: [],
-      event_reporting:           [],
-    },
+    name: 'release-gatekeeper',
+    description: 'Runs CI test suite, enforces human approval before deployment',
+    connector_type: 'custom',
+    integration_profile: { connection_model: 'always_on', message_exchange: true,
+      pre_invocation_mediation: [], post_invocation_mediation: [], event_reporting: [] },
   };
-
   let res = await fetch(`${SWITCH_SERVER}/agents`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${REG_KEY}` },
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${REG_KEY}` },
     body: JSON.stringify(body),
   });
-
   if (res.status === 409) {
-    console.log('[release-gatekeeper] ⚠️  Name exists (409) — re-registering with overwrite:true...');
     res = await fetch(`${SWITCH_SERVER}/agents`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${REG_KEY}` },
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${REG_KEY}` },
       body: JSON.stringify({ ...body, overwrite: true }),
     });
   }
-
-  if (!res.ok) {
-    const txt = await res.text().catch(() => '');
-    throw new Error(`Registration failed: HTTP ${res.status} — ${txt}`);
-  }
-
+  if (!res.ok) throw new Error(`Registration failed: HTTP ${res.status}`);
   const data = await res.json();
-  console.log('\n[release-gatekeeper] ✅ Registered! Patching .env...\n');
-
   const envPath = path.join(__dirname, '../.env');
   if (fs.existsSync(envPath)) {
     let env = fs.readFileSync(envPath, 'utf8');
-    env = env.replace(/^GATE_AGENT_ID=.*$/m,      `GATE_AGENT_ID=${data.id}`)
-             .replace(/^GATE_AGENT_API_KEY=.*$/m,  `GATE_AGENT_API_KEY=${data.api_key}`);
+    env = env.replace(/^GATE_AGENT_ID=.*$/m, `GATE_AGENT_ID=${data.id}`)
+             .replace(/^GATE_AGENT_API_KEY=.*$/m, `GATE_AGENT_API_KEY=${data.api_key}`);
     if (!env.includes('GATE_AGENT_ID='))     env += `\nGATE_AGENT_ID=${data.id}`;
     if (!env.includes('GATE_AGENT_API_KEY=')) env += `\nGATE_AGENT_API_KEY=${data.api_key}`;
     fs.writeFileSync(envPath, env);
-    console.log('[release-gatekeeper] ✅ .env updated — restart the agent now.\n');
-  } else {
-    console.log(`  GATE_AGENT_ID=${data.id}`);
-    console.log(`  GATE_AGENT_API_KEY=${data.api_key}`);
-    console.log('\n  Add these to your .env, then restart.\n');
+    console.log('[release-gatekeeper] ✅ Registered + .env updated. Restart the agent.\n');
   }
-
   process.exit(0);
 }
 
-// ── SSE connection ────────────────────────────────────────────────────────────
-const CONNECTION_ID = randomUUID();
+// ── Anti-spam state ───────────────────────────────────────────────────────────
+const MAX_SEEN     = 500;
+let reconnectDelay = 2000;
 
+// ── SSE connection ────────────────────────────────────────────────────────────
 function connectSSE() {
-  const sseUrl = `${SWITCH_SERVER}/agents/${AGENT_ID}/events?connection_id=${CONNECTION_ID}&scope=all&filter=all&start_from=head`;
-  console.log(`[release-gatekeeper] 🔌 Connecting to SSE: ${sseUrl}`);
+  const sseUrl = `${SWITCH_SERVER}/agents/${AGENT_ID}/events`
+    + `?connection_id=${CONNECTION_ID}`
+    + `&scope=all&filter=all&start_from=head`;
+  console.log(`[release-gatekeeper] 🔌 Connecting to SSE...`);
 
   const es = new EventSource(sseUrl, {
     headers: { Authorization: `Bearer ${AGENT_API_KEY}` },
   });
 
   let cursor = 0;
-  const processedKeys = new Set();
+  let heartbeatTimer = null;
+  const processed = new Set();
 
-  // Heartbeat every 2 seconds
-  const heartbeat = setInterval(async () => {
-    try {
-      const r = await fetch(`${SWITCH_SERVER}/agents/${AGENT_ID}/connection/beat`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${AGENT_API_KEY}` },
-        body: JSON.stringify({ connection_id: CONNECTION_ID, cursor }),
-      });
-      if (r.status === 404) {
-        clearInterval(heartbeat);
-        es.close();
-        console.log('[release-gatekeeper] 🔄 Connection lost — reconnecting...');
-        setTimeout(connectSSE, 2000);
-      }
-    } catch { /* ignore transient errors */ }
-  }, 2000);
+  function cleanup() {
+    if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }
+    try { es.close(); } catch {}
+  }
+
+  function scheduleReconnect(reason) {
+    cleanup();
+    console.log(`[release-gatekeeper] 🔄 Reconnecting in ${reconnectDelay / 1000}s... (${reason})`);
+    setTimeout(connectSSE, reconnectDelay);
+    reconnectDelay = Math.min(reconnectDelay * 2, 60_000);
+  }
+
+  let isInitialConnect = true;
 
   es.onopen = () => {
-    console.log('[release-gatekeeper] ✅ Connected to Switch Room SSE stream.');
-    console.log('[release-gatekeeper] 🚀 Waiting for @release-gatekeeper mention in #fintech-war-room …');
+    if (isInitialConnect) {
+      console.log('[release-gatekeeper] ✅ Connected to Switch Room SSE stream.');
+      console.log('[release-gatekeeper] 🚀 Waiting for @release-gatekeeper mention in #fintech-war-room …');
+      isInitialConnect = false;
+    }
+    reconnectDelay = 2000;
+
+    // Ensure previous heartbeat timer is cleared before starting a new one
+    if (heartbeatTimer) clearInterval(heartbeatTimer);
+
+    // Heartbeat every 2s (per Switch docs: TTL = 6s)
+    heartbeatTimer = setInterval(async () => {
+      try {
+        const r = await fetch(`${SWITCH_SERVER}/agents/${AGENT_ID}/connection/beat`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${AGENT_API_KEY}` },
+          body: JSON.stringify({ connection_id: CONNECTION_ID, cursor }),
+        });
+        if (r.status === 404) {
+          scheduleReconnect('heartbeat 404');
+        } else if (r.status === 409) {
+          try {
+            const body = await r.json();
+            if (body.code === 'taken_over') {
+              console.error('[release-gatekeeper] ❌ Connection taken over. Stopping.');
+              cleanup();
+              return;
+            }
+          } catch {}
+          scheduleReconnect('heartbeat 409');
+        }
+      } catch { /* network hiccup */ }
+    }, 2000);
   };
 
   es.addEventListener('message', async (event) => {
     let frame;
     try { frame = JSON.parse(event.data); } catch { return; }
 
-    if (frame.id) cursor = frame.id;
+    // Update cursor from sequence number
+    if (typeof frame.id === 'number') cursor = frame.id;
 
-    const payload = frame.data?.payload || frame.payload;
+    // Extract message payload per Switch docs
+    const data    = frame.data || {};
+    const payload = data.payload || frame.payload;
     if (!payload) return;
 
+    // Body is in payload.body (per docs), fallback to payload.content
     const content = payload.body || payload.content || '';
     if (!content) return;
 
-    // ── Guard 1: Deduplicate by cursor + content prefix ───────────────────────
+    // ── Guard 1: Dedup by sequence + content prefix ──
     const dedupKey = `${frame.id}:${content.slice(0, 100)}`;
-    if (processedKeys.has(dedupKey)) return;
-    processedKeys.add(dedupKey);
-    if (processedKeys.size > 500) processedKeys.delete(processedKeys.values().next().value);
+    if (processed.has(dedupKey)) return;
+    processed.add(dedupKey);
+    if (processed.size > MAX_SEEN) {
+      const first = processed.values().next().value;
+      processed.delete(first);
+    }
 
-    // ── Guard 2: Ignore messages from ourselves (by agent ID) ─────────────────
-    const senderId = payload.sender_id || frame.data?.sender_id || '';
-    if (senderId === AGENT_ID) return;
-
-    // ── Guard 3: Ignore messages from ourselves (by name, catches Discord echo) ─
-    const senderName = (payload.sender_name || frame.data?.sender_name || '').toLowerCase();
+    // ── Guard 2: Self-ignore by sender_name ──
+    const senderName = (payload.sender_name || data.sender_name || '').toLowerCase();
     if (senderName === 'release-gatekeeper') return;
 
-    // ── Guard 4: Content echo filter — skip our own outgoing message text ─────
-    if (OWN_MESSAGE_SIGNATURES.some(sig => content.includes(sig))) return;
+    // ── Guard 3: Content echo filter — skip messages containing our own output ──
+    if (OWN_SIGNATURES.some(sig => content.includes(sig))) return;
 
-    const eventRoomId = frame.data?.room_id || ROOM_ID;
+    const eventRoomId = data.room_id || ROOM_ID;
     const contentLower = content.toLowerCase();
 
-    // ── Trigger A: @release-gatekeeper tag ───────────────────────────────────
+    // ── Trigger A: @release-gatekeeper mention → run CI ────────────────────────
     if (contentLower.includes('@release-gatekeeper')) {
-      const now = Date.now();
-
+      // Guard 4: CI already running
       if (ciRunning) {
-        console.log('[release-gatekeeper] ⏳ CI already running — ignoring duplicate trigger.');
+        console.log('[release-gatekeeper] ⏳ CI already running — skipping.');
         return;
       }
+      // Guard 5: awaiting approval already
       if (awaitingApproval) {
-        console.log('[release-gatekeeper] ⏳ Awaiting human approval — ignoring CI re-trigger.');
+        console.log('[release-gatekeeper] ⏳ Awaiting approval — skipping.');
         return;
       }
+      // Guard 6: cooldown
+      const now = Date.now();
       if ((now - lastCiRunAt) < CI_COOLDOWN_MS) {
-        const secsLeft = Math.round((CI_COOLDOWN_MS - (now - lastCiRunAt)) / 1000);
-        console.log(`[release-gatekeeper] ⏳ Cooldown active (${secsLeft}s left) — ignoring trigger.`);
+        console.log('[release-gatekeeper] ⏳ Cooldown — skipping.');
         return;
       }
 
-      ciRunning  = true;
+      ciRunning = true;
       lastCiRunAt = now;
       console.log('[release-gatekeeper] 🔔 Trigger received — running CI test suite…');
 
-      // IMPORTANT: "Release Gatekeeper:" is in OWN_MESSAGE_SIGNATURES → will NOT re-trigger
-      await postMessage('⏳ **Release Gatekeeper:** Running idempotency test suite against patched server…', eventRoomId);
+      // NOTE: Message does NOT contain "@release-gatekeeper" to prevent echo-trigger
+      await postMessage(
+        '⏳ **Release Gatekeeper:** Running idempotency test suite against patched server…',
+        eventRoomId
+      );
 
       try {
         const { passed, stdout, stderr } = await runTests();
@@ -299,12 +286,12 @@ function connectSSE() {
           ].join('\n'), eventRoomId);
         }
       } finally {
-        ciRunning = false; // always release, even if postMessage throws
+        ciRunning = false;
       }
-      return; // don't fall through to Trigger B
+      return;
     }
 
-    // ── Trigger B: human types "Approved" ────────────────────────────────────
+    // ── Trigger B: human types "Approved" ─────────────────────────────────────
     if (awaitingApproval && content.trim().toLowerCase() === 'approved') {
       awaitingApproval = false;
       const approver = payload.sender_name || 'crazysaurabh';
@@ -327,19 +314,21 @@ function connectSSE() {
   });
 
   es.onerror = (err) => {
-    console.error('[release-gatekeeper] ⚡ SSE error:', err.message || JSON.stringify(err));
+    const status = err.status;
+
+    if (typeof status === 'number' && [400, 401, 403].includes(status)) {
+      console.error(`[release-gatekeeper] ❌ Fatal SSE error (${status}). Check SWITCH_URL and agent credentials.`);
+      cleanup();
+      return;
+    }
+
+    // Normal transient socket resets/keepalives are auto-reconnected by EventSource silently
   };
 }
 
-// ── Main ─────────────────────────────────────────────────────────────────────
+// ── Main ──────────────────────────────────────────────────────────────────────
 async function main() {
-  if (!AGENT_ID || !AGENT_API_KEY) {
-    await registerAgent();
-  }
+  if (!AGENT_ID || !AGENT_API_KEY) await registerAgent();
   connectSSE();
 }
-
-main().catch(err => {
-  console.error('[release-gatekeeper] Fatal:', err.message);
-  process.exit(1);
-});
+main().catch(err => { console.error('[release-gatekeeper] Fatal:', err.message); process.exit(1); });
