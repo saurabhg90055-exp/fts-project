@@ -3,6 +3,7 @@
 *.env.local
 
 GUIDE.md
+script.md
 
 # ── Node.js ───────────────────────────────────────────────────────────────────
 node_modules/
