@@ -36,7 +36,7 @@ Mobile App / SDK Retry (Same idempotency_key)
 
 ---
 
-## 💡 What PayGuard Switch Solves (In Plain English)
+## 💡 What PayGuard Switch Solves.
 
 **PayGuard Switch replaces the stressful, error-prone manual triage process with an autonomous team of AI agents living in a Discord war-room.**
 
@@ -118,9 +118,9 @@ npm install
 ```
 
 ### 2. Configure Environment Variables
-Copy `.env.example` to `.env`:
+`.env`:
 ```bash
-copy .env.example .env
+.env
 ```
 Fill in your credentials from the Switch Console:
 ```env
