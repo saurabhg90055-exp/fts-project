@@ -1,6 +1,51 @@
 # PayGuard Switch 🛡️
 
-> **Autonomous FinTech Incident War-Room** — Multi-agent incident triage and idempotency repair pipeline powered by **Switch AI**, **Discord**, and **Google Antigravity**.
+> **Autonomous FinTech Incident War-Room** — A collaborative multi-agent pipeline powered by **Switch AI**, **Discord**, and **Google Antigravity** that autonomously investigates, patches, tests, and deploys fixes for payment double-charge incidents in under 2 minutes.
+
+**Project:** PayGuard Switch  
+**Author:** Saurabh Gupta, Anikha Padala   
+**Date:** November 2026  
+**Hackathon Deadline:** November 7, 2026 — 11:59 PM IST
+
+---
+
+##  The Problem: The "Double-Charge" Nightmare
+
+Imagine you are paying \$49.99 on an app, but your mobile connection flickers. The app's payment SDK automatically retries the network request with the same `idempotency_key` (`idem_tx_901`).
+
+```
+Mobile App / SDK Retry (Same idempotency_key)
+                 │
+                 ▼
+     POST /api/v1/charge
+                 │
+                 ▼ (BUG: Blind INSERT without SELECT check)
+   ┌───────────────────────────┐
+   │ SQLite transactions table │
+   ├───────────────────────────┤
+   │ Row 1: $49.99 (CAPTURED)  │
+   │ Row 2: $49.99 (CAPTURED)  │ 💸 Customer charged $99.98 instead of $49.99!
+   └───────────────────────────┘
+```
+
+### Why this is a critical crisis in production:
+1. **Financial Loss & Chargebacks:** Customers are billed twice, triggering angry support tickets, high bank dispute fees, and lost customer trust.
+2. **Slow, Stressful Manual Triage:** On-call engineers are paged at 2 AM to manually SSH into servers, query SQL databases, write a hotfix, test it, and deploy.
+3. **Privacy (PII) Violations:** Under pressure, engineers frequently paste raw SQL outputs containing real credit card numbers and emails directly into Slack or Discord war-rooms, violating PCI-DSS and privacy regulations.
+4. **Dangerous "Fly-by-Night" Hotfixes:** Rushed code changes often crash production (e.g., adding a `UNIQUE` database constraint when duplicate rows already exist in the database causes immediate engine crashes).
+
+---
+
+## 💡 What PayGuard Switch Solves (In Plain English)
+
+**PayGuard Switch replaces the stressful, error-prone manual triage process with an autonomous team of AI agents living in a Discord war-room.**
+
+Instead of engineers panicking in chat channels, three specialized Switch AI agents collaborate in real-time:
+
+- 🔍 **Instant Forensic Investigation:** `@sql-forensics` queries the live payment database, calculates total overcharges, and **automatically masks sensitive card numbers** (complying with Room Rule #1).
+- 🛠️ **Autonomous Code Repair:** `@antigravity-fixer` reads the root cause, synthesizes a robust idempotency check, safely migrates dirty records, and patches the server code live.
+- 🧪 **Automated CI Gate:** `@release-gatekeeper` executes the test suite against the running server to prove all retries now return the original transaction ID without creating duplicate charges.
+- 🛡️ **Human-in-the-Loop Safety:** Per Room Rule #2, no code can be deployed without explicit human approval. The engineer simply reviews the green CI tests and types **`Approved`** in Discord to deploy the hotfix and record a permanent audit entry into the Switch Console.
 
 ---
 
