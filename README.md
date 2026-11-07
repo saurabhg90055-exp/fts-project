@@ -1,67 +1,42 @@
 # PayGuard Switch 🛡️
 
-> **Autonomous FinTech Incident War-Room** — Switch AI + Antigravity multi-agent idempotency repair pipeline.
-
-[![Hackathon](https://img.shields.io/badge/Flip%20The%20Switch-Hackathon%20Submission-blueviolet)](https://github.com/saurabhg90055-exp/fts-project)
-[![Switch Version](https://img.shields.io/badge/Switch%20Console-v0.40.1-blue)](https://switchagents.ai)
-[![Node.js](https://img.shields.io/badge/Node.js-18%2B-green)](https://nodejs.org)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+> **Autonomous FinTech Incident War-Room** — Multi-agent incident triage and idempotency repair pipeline powered by **Switch AI**, **Discord**, and **Google Antigravity**.
 
 ---
 
-## 🏛️ Architecture Overview
+## 🏛️ System Architecture
 
 ```
-[Faulty Node.js + SQLite Payment API]  (Port 4000 — Double-charges customers on retry)
-               │
-               ▼ (Customer reports duplicate charge)
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                      SWITCH AI — Cloud Switch Workspace                     │
-│                    Room: #fintech-war-room | Bridge: Discord                │
-│                                                                             │
-│  Shared Room Material & Governance:                                         │
-│   • Rule 1 (PII Compliance): Mask all credit card numbers in messages.      │
-│   • Rule 2 (Production Gate): No deployment without human "Approved" signoff│
-│   • Shared State: Real-time SSE event stream, Tasks & Decisions log         │
-└──────────────┬───────────────────────────┬──────────────────────────┬───────┘
-               │ (SSE / HTTP Protocol)     │ (Native Connector / MCP) │ (SSE / HTTP Protocol)
-               ▼                           ▼                          ▼
-   ┌─────────────────────┐     ┌──────────────────────┐   ┌────────────────────────┐
-   │ @sql-forensics      │     │ @antigravity-fixer   │   │ @release-gatekeeper    │
-   │ (Custom Node Agent) │────▶│ (Antigravity Pro)    │──▶│ (Custom Node Agent)    │
-   │ Queries live SQLite │     │ Writes idempotency   │   │ Verifies Room Rules,   │
-   │ DB, masks PII, finds│     │ code fix & runs      │   │ runs CI test suite,    │
-   │ duplicate charges   │     │ unit tests           │   │ awaits human approval  │
-   └─────────────────────┘     └──────────────────────┘   └────────────────────────┘
-               │                           │                          │
-               └───────────────────────────┼──────────────────────────┘
-                                           │
-                               ┌───────────▼────────────┐
-                               │  Discord #fintech-     │
-                               │  war-room Channel      │
-                               │  Bot: playSwitch       │
-                               │  Human: @Engineer      │
-                               └────────────────────────┘
+       [Faulty Node.js + SQLite Payment API] (Port 4000 - Double-charges customers on network retry)
+                                    │
+                                    ▼ (Throws Duplicate Charge Alert)
+┌─────────────────────────────────────────────────────────────────────────────────────────────────┐
+│                               SWITCH AI ROOM: #fintech-war-room                                 │
+│                               (Bridged to Discord via playSwitch bot)                           │
+│  Shared Room Material:                                                                          │
+│   • Room Rule #1: Mask all card numbers & PII before posting to room.                           │
+│   • Room Rule #2: Require explicit human sign-off ("Approved") before hotfix deployment.        │
+│   • Decisions Log: Permanent post-mortem audit trail stored in Switch Console.                  │
+└──────────────┬─────────────────────────────┬─────────────────────────────┬──────────────────────┘
+               │ (SSE / HTTP)                │ (SSE / HTTP)                │ (SSE / HTTP)
+               ▼                             ▼                             ▼
+┌─────────────────────────────┐┌─────────────────────────────┐┌─────────────────────────────┐
+│       @sql-forensics        ││     @antigravity-fixer      ││     @release-gatekeeper     │
+│   (Custom Switch Agent #1)  ││   (Custom Switch Agent #2)  ││   (Custom Switch Agent #3)  │
+│ • Queries live payments.db  ││ • Wakes up on mention       ││ • Listens on SSE            │
+│ • Masks credit card PII     ││ • Patches server.js live    ││ • Runs live CI test suite   │
+│ • Finds duplicate charges   ││ • Adds idempotency check    ││ • Enforces Room Rule #2     │
+│ • Estimates $49.99 loss     ││ • Deduplicates old data     ││ • Pauses for human gate     │
+│ • Hands off to fixer agent  ││ • Posts hotfix diff to room ││ • Logs permanent decision   │
+└─────────────────────────────┘└─────────────────────────────┘└─────────────────────────────┘
+                                                                             │
+                                                                             ▼ (Human Gate)
+                                                               ┌───────────────────────────┐
+                                                               │  Human On-Call Engineer   │
+                                                               │  Types "Approved" in chat │
+                                                               │  Hotfix deployed to prod! │
+                                                               └───────────────────────────┘
 ```
-
----
-
-## 💡 The Problem & The Solution
-
-- **The Problem:** In financial payment systems, network interruptions cause clients and SDKs to retry `POST /api/v1/charge`. Without an atomic idempotency check, multiple charge rows are created for the same transaction, billing customers twice, creating customer support escalations, and risking unmasked card PII leaks during manual triage.
-- **The Solution:** **PayGuard Switch** deploys a collaborative multi-agent incident response room in Discord powered by Switch AI:
-  1. **`@sql-forensics`** analyzes the database, detects duplicate idempotency keys, and guarantees PII masking (`****-****-****-LAST4`).
-  2. **`@antigravity-fixer`** analyzes the incident, writes an atomic `SELECT-or-INSERT` idempotency patch in `server.js`, and creates a database unique constraint.
-  3. **`@release-gatekeeper`** executes the CI regression test suite and enforces a **Human-in-the-Loop** gate before deployment can proceed.
-
----
-
-## 🛡️ Enforced Room Rules
-
-| Rule | Title | Enforcement |
-|:---|:---|:---|
-| **Rule 1** | **PII Compliance** | Credit card numbers are never posted raw in chat. Automatically masked to `****-****-****-LAST4`. |
-| **Rule 2** | **Production Gate** | No patch or hotfix is deployed without an explicit human `Approved` message typed in the room. |
 
 ---
 
@@ -70,158 +45,147 @@
 ```
 payguard-switch/
 ├── payment-service/
-│   ├── server.js                   # Express Payment API + SQLite DB (Port 4000)
-│   ├── server.buggy.js             # Initial incident state (double-charge bug)
-│   ├── reset-db.js                 # Reverts server & reseeds duplicate DB state
-│   ├── test.js                     # Automated 3-stage idempotency test suite
-│   └── trigger-alert.js            # Live simulation script verifying retry safety
+│   ├── server.js               # Active payment API server (Port 4000)
+│   ├── server.buggy.js         # Frozen buggy server reference (used by reset)
+│   ├── server.patched.js       # Verified patched server reference
+│   ├── reset-db.js             # Reset script: restores buggy server + seeds duplicate DB
+│   ├── test.js                 # Automated idempotency verification test suite
+│   └── trigger-alert.js        # Helper script to trigger incident alerts
 ├── agents/
-│   ├── sql-forensics.js            # Custom Agent #1: SQLite Inspector + PII Masker
-│   └── release-gate.js             # Custom Agent #2: CI Runner + Human Approval Gate
-├── fintech-war-room.template.yaml  # Declarative Switch Room template
-├── .env.example                    # Environment variable template
+│   ├── sql-forensics.js        # Switch Agent #1 — Database Inspector & PII Masker
+│   ├── antigravity-fixer.js    # Switch Agent #2 — Autonomous AI Code Repair Agent
+│   └── release-gate.js         # Switch Agent #3 — Compliance & Release Gatekeeper
+├── script.md                   # Video recording walkthrough script (~2.5 minutes)
+├── GUIDE.md                    # Comprehensive setup & hackathon guide
+├── fintech-war-room.template.yaml # Switch room template definition
+├── .env.example                # Environment variable configuration template
 ├── package.json
-├── PRD.md                          # Full Product Requirements Document
-└── README.md                       # Documentation
+└── README.md
 ```
 
 ---
 
-## 🚀 Quick Start Guide
+## ⚡ Quick Start
 
-### Step 1 — Install Dependencies
+### 1. Install Dependencies
 ```bash
 npm install
 ```
 
-### Step 2 — Configure Environment Variables
+### 2. Configure Environment Variables
 Copy `.env.example` to `.env`:
 ```bash
 copy .env.example .env
 ```
-Fill in the values from your **Switch Console**:
+Fill in your credentials from the Switch Console:
 ```env
-# Switch Console API URL (Local: http://localhost:8080 or Codespaces preview URL)
 SWITCH_URL=http://localhost:8080
-
-# Room ID from Switch Console -> Your Rooms -> fintech-war-room
-SWITCH_ROOM_ID=PASTE_YOUR_ROOM_ID_HERE
-
-# Messaging app connected to Discord
+SWITCH_ROOM_ID=your_room_id
 SWITCH_MESSAGING_APP=playSwitch
 
-# Agent Registration Keys (from Switch Console -> Full Admin Interface -> API Keys)
-SQL_AGENT_TOKEN=PASTE_SQL_FORENSICS_REGISTRATION_KEY_HERE
-GATE_AGENT_TOKEN=PASTE_GATEKEEPER_REGISTRATION_KEY_HERE
+# Registration Tokens (from Switch Console → Full Admin Interface → API Keys)
+SQL_AGENT_TOKEN=your_sql_forensics_token
+FIXER_AGENT_TOKEN=your_antigravity_fixer_token
+GATE_AGENT_TOKEN=your_release_gatekeeper_token
 ```
 
-### Step 3 — Initialize Incident State
-Reset the database with the pre-seeded duplicate transaction bug:
+---
+
+## 🎬 Running the Incident War-Room 
+
+Open **5 terminal tabs/windows**:
+
+### Terminal 1 — Start the Payment API
 ```bash
-npm run reset
+npm run start:api
 ```
 
-### Step 4 — Launch Services (3 Terminals)
-
-- **Terminal 1 (Payment API):**
-  ```bash
-  npm run start:api
-  ```
-- **Terminal 2 (SQL Forensics Agent):**
-  ```bash
-  npm run start:forensics
-  ```
-- **Terminal 3 (Release Gatekeeper Agent):**
-  ```bash
-  npm run start:gatekeeper
-  ```
-
----
-
-## 🎬 Incident Response Demo Walkthrough
-
-1. **Trigger Incident:** In Discord `#fintech-war-room`, type:
-   ```text
-   🚨 Alert: Customer arjun@example.com reported double-charge on /api/v1/charge! @sql-forensics investigate.
-   ```
-2. **Forensics Report:** `@sql-forensics` inspects `payments.db`, reports duplicate key `idem_tx_901`, calculates estimated overcharge (`$49.99`), masks card `****-****-****-3344`, and tags `@antigravity-fixer`.
-3. **Idempotency Hotfix:** `@antigravity-fixer` inspects `payment-service/server.js`, patches the endpoint with idempotency checks, and tags `@release-gatekeeper`.
-4. **CI Testing:** `@release-gatekeeper` runs `npm test`, confirms tests pass, and blocks deployment:
-   ```text
-   ⚠️ Human Permission Gate — Room Rule #2:
-   @Engineer All tests are green. Please type `Approved` to deploy.
-   ```
-5. **Human Sign-Off:** Type `Approved` in Discord. The gatekeeper verifies permission, confirms hotfix deployment, and logs the decision.
-6. **Live Verification:** Run `npm run trigger` in terminal to confirm duplicate charges are now cleanly prevented (`Duplicate prevented`).
-
----
-
-## 🔑 Key Bug & Idempotency Fix
-
-### The Bug (`server.buggy.js`)
-```javascript
-// BUGGY: Inserts unconditionally without verifying existing idempotency_key
-app.post('/api/v1/charge', (req, res) => {
-  const { user_email, card_last4, amount, idempotency_key } = req.body;
-  db.run(
-    `INSERT INTO transactions (user_email, card_last4, amount, idempotency_key, status) VALUES (?, ?, ?, ?, 'CAPTURED')`,
-    [user_email, card_last4, amount, idempotency_key],
-    function (err) {
-      if (err) return res.status(500).json({ error: err.message });
-      res.status(201).json({ transaction_id: this.lastID, status: 'CAPTURED' });
-    }
-  );
-});
-```
-
-### The Fix (`server.js`)
-```javascript
-// PATCHED: Checks for existing idempotency_key and returns existing transaction
-app.post('/api/v1/charge', (req, res) => {
-  const { user_email, card_last4, amount, idempotency_key } = req.body;
-
-  db.get(
-    `SELECT id, status, idempotency_key FROM transactions WHERE idempotency_key = ?`,
-    [idempotency_key],
-    (err, existing) => {
-      if (err) return res.status(500).json({ error: err.message });
-      if (existing) {
-        return res.status(200).json({
-          transaction_id: existing.id,
-          status: existing.status,
-          idempotency_key: existing.idempotency_key,
-        });
-      }
-
-      db.run(
-        `INSERT INTO transactions (user_email, card_last4, amount, idempotency_key, status) VALUES (?, ?, ?, ?, 'CAPTURED')`,
-        [user_email, card_last4, amount, idempotency_key],
-        function (err) {
-          if (err) return res.status(500).json({ error: err.message });
-          res.status(201).json({
-            transaction_id: this.lastID,
-            status: 'CAPTURED',
-            idempotency_key,
-          });
-        }
-      );
-    }
-  );
-});
-```
-
----
-
-## 🧪 Testing
-
-Run automated tests against the running API:
+### Terminal 2 — Prove the Incident (Tests Fail)
 ```bash
 npm test
 ```
-- **Before Fix:** 6 passed, 1 failed (duplicate charge occurs).
-- **After Fix:** 7 passed, 0 failed (idempotency verified).
+> 🎯 **Expected:** **6 passed, 1 failed**
+> `❌ FAIL: Same transaction_id returned (no duplicate) → Expected 3, Got 4`
+> Demonstrates that network retries trigger duplicate charges without idempotency.
+
+### Terminal 3 — Start SQL Forensics Agent
+```bash
+npm run start:forensics
+```
+
+### Terminal 4 — Start Antigravity Fixer Agent
+```bash
+npm run start:fixer
+```
+
+### Terminal 5 — Start Release Gatekeeper Agent
+```bash
+npm run start:gatekeeper
+```
 
 ---
 
-## 📜 License
-MIT © 2026 PayGuard Switch Team
+## 🔄 End-to-End Incident Lifecycle in Discord
+
+1. **Trigger Incident:** In Discord `#fintech-war-room`, post the alert:
+   ```text
+   🚨 Alert: Customer arjun@example.com reported a double-charge of $99.98 on /api/v1/charge! @sql-forensics investigate immediately.
+   ```
+
+2. **Autonomous Forensics:**
+   - `@sql-forensics` inspects `payments.db`.
+   - Masks credit card numbers: `****-****-****-3344` (Room Rule #1 compliance).
+   - Identifies duplicate key `idem_tx_901` and overcharge of `$49.99 USD`.
+   - Hands off by tagging `👉 @antigravity-fixer`.
+
+3. **Autonomous Code Repair:**
+   - `@antigravity-fixer` catches the mention over SSE.
+   - Automatically patches `payment-service/server.js` live without manual prompt.
+   - Adds pre-lookup check (`SELECT ... WHERE idempotency_key = ?`), startup table deduplication migration, and database `UNIQUE` index.
+   - Posts hotfix diff into Discord.
+
+4. **Reload Payment Server:**
+   - In Terminal 1, press `Ctrl+C` and restart `npm run start:api`.
+
+5. **CI Verification:**
+   - In Discord, tag the gatekeeper:
+     ```text
+     @release-gatekeeper The patch is applied to payment-service/server.js. Run CI verification.
+     ```
+   - `@release-gatekeeper` runs the test suite against the live server:
+     **7 passed, 0 failed** ✅.
+
+6. **Human Permission Gate (Room Rule #2):**
+   - The gatekeeper pauses deployment and requests human sign-off.
+   - In Discord, type:
+     ```text
+     Approved
+     ```
+   - `@release-gatekeeper` deploys the hotfix and permanently records the incident decision into the **Switch Console Decisions log**.
+
+---
+
+## 🔁 Restarting
+
+To restart the system back to the initial state (**6 passed, 1 failed**) at any time:
+
+```bash
+npm run reset
+```
+This automatically:
+- Reverts `payment-service/server.js` back to the buggy version.
+- Re-seeds `payments.db` with duplicate charge rows (`idem_tx_901`).
+
+---
+
+## 📜 Room Rules & Compliance
+
+| Rule | Enforcement | Agent Responsible |
+|---|---|---|
+| **Room Rule #1 (PII Masking)** | All credit card numbers must be masked to `****-****-****-XXXX` | `@sql-forensics` |
+| **Room Rule #2 (Human Sign-Off)** | No hotfix may be deployed without explicit `Approved` confirmation | `@release-gatekeeper` |
+
+---
+
+## 📄 License
+MIT
