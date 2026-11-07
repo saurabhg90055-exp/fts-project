@@ -9,6 +9,108 @@
 
 ---
 
+## 🔌 How We Used Switch in This Project
+
+PayGuard Switch is built **entirely around Switch AI** as its real-time collaboration and agent-coordination backbone. Here's a detailed breakdown of exactly how we integrated and leveraged Switch:
+
+### 🏗️ Switch Infrastructure Setup
+
+We used **Switch Console (Cloud Switch v0.40.1)** as the central server. The Switch room (`#fintech-war-room`) is bridged to Discord via the **playSwitch bot** (`@crazysaurabh`), meaning every message posted by an agent through Switch's HTTP API instantly appears in our Discord channel — and every Discord message is forwarded back to the Switch room as an SSE event.
+
+```
+Switch Console (Cloud Switch v0.40.1)
+        │
+        └── Room: #fintech-war-room
+                │
+                ├── Bridge: playSwitch Discord bot  ←→  Discord #fintech-war-room
+                ├── Room Rule #1: Mask all PII before posting
+                ├── Room Rule #2: Human "Approved" required before deploy
+                └── Decisions Log: Permanent post-mortem audit trail
+```
+
+### 🤖 3 Agents Registered and Running via Switch
+
+We registered **3 custom agents** in the Switch Console and connected them to the room using Switch's **SSE stream** (for inbound events) and **HTTP POST API** (for outbound messages). Each agent authenticates with a **Bearer token** generated from the Switch Console API Keys panel.
+
+| Agent | Type | Switch Integration |
+|-------|------|--------------------|
+| `@sql-forensics` | Custom Node.js Agent | SSE listener + HTTP POST to room |
+| `@antigravity-fixer` | Antigravity Pro (native connector) | Native Switch connector + reads room history |
+| `@release-gatekeeper` | Custom Node.js Agent | SSE listener + HTTP POST to room |
+
+#### Agent #1 — `@sql-forensics`
+- **Connects** to the Switch room SSE stream on startup using `SWITCH_URL` and `SWITCH_ROOM_ID` from `.env`
+- **Listens** for `@sql-forensics` mentions forwarded from Discord via the playSwitch bridge
+- **Posts** a structured forensics report (with PII-masked card numbers) back to the Switch room, which the bot then forwards to Discord
+- **Hands off** by tagging `@antigravity-fixer` in the room message
+
+#### Agent #2 — `@antigravity-fixer`
+- Registered in Switch Console with **provider: `antigravity`**
+- Connected via **native Switch connector** in Antigravity Pro
+- Reads the **full room chat history** (shared context) to understand the incident
+- Autonomously patches `payment-service/server.js`, then posts the git diff back to the Switch room (→ Discord)
+- Tags `@release-gatekeeper` to hand off to the CI gate
+
+#### Agent #3 — `@release-gatekeeper`
+- **Connects** to the Switch room SSE stream with its own Bearer token
+- **Triggered** when `@release-gatekeeper` is mentioned in the room by `@antigravity-fixer`
+- Runs the full CI test suite (`node payment-service/test.js`) and posts results to the room
+- Implements **Room Rule #2**: pauses and waits for the human on-call engineer to type `Approved` in Discord
+- On approval, posts deployment confirmation and **records the post-mortem decision into the Switch Console Decisions tab** — a permanent, immutable audit log
+
+### 🗂️ Switch Room Rules (Governance as Code)
+
+Two **Room Rules** are configured in the Switch room template (`fintech-war-room.template.yaml`) and enforced at the agent code level:
+
+| Rule | What It Does | Who Enforces It |
+|------|-------------|-----------------|
+| **Rule #1 — PII Masking** | All credit card numbers masked to `****-****-****-LAST4` before any room post | `@sql-forensics` (code-level regex masking) |
+| **Rule #2 — Human Gate** | Zero autonomous deployments; requires explicit `Approved` message in Discord | `@release-gatekeeper` (SSE listener blocks until approval) |
+
+### 🔗 Switch MCP in Antigravity Pro
+
+We also added the **Switch MCP server** to Antigravity Pro:
+```json
+{
+  "mcpServers": {
+    "switch-docs": {
+      "url": "https://docs.switchagents.ai/mcp"
+    }
+  }
+}
+```
+This lets Antigravity read the exact Switch v2 API schema and room history automatically, enabling `@antigravity-fixer` to understand room state without manual copy-pasting.
+
+### ⚡ The Full Switch-Powered Flow
+
+```
+Discord message → playSwitch bot → Switch Room SSE
+        ↓
+@sql-forensics (SSE listener) wakes up
+        ↓
+Queries payments.db → masks PII → HTTP POST to Switch room
+        ↓
+Switch room → playSwitch bot → Discord (forensics report appears)
+        ↓
+@antigravity-fixer (native connector) reads room history
+        ↓
+Patches server.js → HTTP POST diff to Switch room
+        ↓
+Switch room → playSwitch bot → Discord (diff appears)
+        ↓
+@release-gatekeeper (SSE listener) wakes up
+        ↓
+Runs CI → HTTP POST results to Switch room → waits for "Approved"
+        ↓
+Human types "Approved" in Discord → Switch SSE event
+        ↓
+Deployment confirmed → Decision logged in Switch Console Decisions tab ✅
+```
+
+The entire incident lifecycle — from first alert to deployed fix and permanent audit entry — runs in **under 2 minutes**, entirely through Switch AI.
+
+---
+
 ##  The Problem: The "Double-Charge" Nightmare
 
 Imagine you are paying \$49.99 on an app, but your mobile connection flickers. The app's payment SDK automatically retries the network request with the same `idempotency_key` (`idem_tx_901`).
