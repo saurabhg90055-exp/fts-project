@@ -118,9 +118,9 @@ npm install
 ```
 
 ### 2. Configure Environment Variables
-`.env`:
+Copy `.env.example` to `.env`:
 ```bash
-.env
+copy .env.example .env
 ```
 Fill in your credentials from the Switch Console:
 ```env
