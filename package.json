@@ -4,12 +4,14 @@
   "description": "Autonomous FinTech incident war-room: Switch AI (Cloud Switch) + Discord + Antigravity multi-agent idempotency repair",
   "main": "payment-service/server.js",
   "scripts": {
-  "start:api":         "node payment-service/server.js",
-  "start:forensics":   "node agents/sql-forensics.js",
-  "start:gatekeeper":  "node agents/release-gate.js",
-  "test":              "node payment-service/test.js",
-  "trigger":           "node payment-service/trigger-alert.js"
-},
+    "reset":             "node payment-service/reset-db.js",
+    "start:api":         "node payment-service/server.js",
+    "start:forensics":   "node agents/sql-forensics.js",
+    "start:fixer":       "node agents/antigravity-fixer.js",
+    "start:gatekeeper":  "node agents/release-gate.js",
+    "test":              "node payment-service/test.js",
+    "trigger":           "node payment-service/trigger-alert.js"
+  },
 
   "keywords": ["switch-ai", "antigravity", "fintech", "idempotency", "discord", "multi-agent"],
   "author": "crazysaurabh",
