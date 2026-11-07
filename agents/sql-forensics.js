@@ -305,7 +305,7 @@ function connectSSE() {
         `**Root cause:** \`POST /api/v1/charge\` in \`payment-service/server.js\` inserts a new`,
         `row on every request without checking if the \`idempotency_key\` already exists.`,
         ``,
-        `**Next step for antigravity-fixer:** Patch \`payment-service/server.js\` to enforce`,
+        `👉 **@antigravity-fixer** Please patch \`payment-service/server.js\` to enforce`,
         `idempotency (SELECT existing row before INSERT) and add a UNIQUE index on \`idempotency_key\`.`,
         `Once patched, tag the release gatekeeper to run CI verification.`,
       ].join('\n');
